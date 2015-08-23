@@ -69,6 +69,11 @@ properties
 	gpuDevice;			% GPU DEVICE STRUCTURE
 	interactive = 0;	% STORE A GLOBAL COPY FOR INTERACTIVE TRAINING
 	saveFold
+    
+    betaForSoftmax = 2; %beta for softmax in computing coherence
+    cohPenalty = 0; %coherence penalty
+    resW; %save for residual W
+    
 end % END PROPERTIES
 
 methods
@@ -183,7 +188,7 @@ methods
 				self = self.updateParams(batchX,batchTargets);
 				sumErr = self.accumErr(batchX,sumErr);
 				
-				if ~isempty(self.visFun) & ~mod(dCount,self.displayEvery)&iE>1;
+				if ~isempty(self.visFun) && ~mod(dCount,self.displayEvery) && iE>1;
 					self.auxVars.batchX = batchX;
 					self.auxVars.batchTargets = targets;
 					self.auxVars.error = self.log.err(1:iE-1);
@@ -192,13 +197,13 @@ methods
 				end
 				dCount = dCount+1;
 				% MOVING AVERAGE OF HIDDEN ACTIVATIONS FOR SPARSITY
-				if self.sparsity & ~self.rlu
+				if self.sparsity && ~self.rlu
 					meanAct = mean(self.aHid)*0.1 + 0.9*meanAct;
 				end
 			end
 
 			% SPARSITY (BINARY HIDDENS ONLY)
-			if self.sparsity & ~self.rlu
+			if self.sparsity && ~self.rlu
 				dcSparse = -self.lRate*self.sparseGain*(meanAct-self.sparsity);
 				self.c = self.c + dcSparse;
 			end
@@ -219,7 +224,7 @@ methods
 
 			% SAVE?
 			if iE > 1
-				if ~mod(iE, self.saveEvery) & ~isempty(self.saveFold)
+				if ~mod(iE, self.saveEvery) && ~isempty(self.saveFold)
 					r = self;
 					if ~exist(r.saveFold,'dir')
 						mkdir(r.saveFold);
@@ -385,7 +390,7 @@ methods
 		end
 	end
 	
-	function self = updateParams(self,X,targets);
+	function self = updateParams(self,X,targets)
 	% self = updateParams(X,targets)
 	%--------------------------------------------------------------------------
 	% Update current model parameters based on the states of hidden and visible
@@ -406,6 +411,59 @@ methods
 			          (1-self.momentum)*dW;         % NEW GRADIENT
 
 		self.W = self.W + self.lRate*self.dW;
+        
+        % COHERENCE PENALTY
+        if self.cohPenalty > 0
+            [maxW1, idx1] = max( self.W, [], 2 );
+            tmpW = self.W;
+            for i = 1:size(tmpW, 1)
+                tmpW(i, idx1(i)) = 0;
+            end
+            [maxW2] = max(tmpW, [], 2);
+            [rMaxW1, idx2] = max( self.W*-1, [], 2 );
+            tmpW = self.W*-1;
+            for i = 1:size(tmpW, 1)
+                tmpW(i, idx2(i)) = 0;
+            end
+            [rMaxW2] = max(tmpW, [], 2);
+            for i = 1:size(self.resW, 2)
+                sIdx = sign( self.W(:, i) ); 
+                ii = sIdx == 1;
+                self.resW(ii, i) = maxW1(ii);
+                ii = idx1 == i;
+                self.resW(ii, i) = maxW2(ii);
+                ii = sIdx == -1;
+                self.resW(ii, i) = rMaxW1(ii);
+                ii = idx2 == i;
+                self.resW(ii, i) = rMaxW2(ii);
+            end
+            resW = self.resW;
+%             tic
+%             preW = self.W;
+%             curW = self.W;
+%             for i = 1:size(self.resW, 2)
+%                 sIdx = sign( preW(:, i) ); 
+%                 sIdx = sIdx == -1;
+%                 curW(:,i) = 0;
+%                 curW(sIdx, :) = curW(sIdx, :)*-1;
+%                 self.resW(:, i) = max( curW, [], 2 );
+%                 curW(sIdx, :) = curW(sIdx, :)*-1;
+%                 curW(:, i) = preW(:, i);
+%             end
+%             toc
+            %a vector of M length, M: # hidden nodes.
+            allCos = abs(sum( self.W .* resW, 1 ) )./ ( sqrt(sum(resW.^2,1)) .* sqrt(sum(self.W.^2,1)) );
+            coh_dW_denominator= sum( exp( self.betaForSoftmax*allCos ) );
+            coh_dW_nominator = zeros( size(self.W) );
+            for i = 1:size(self.W, 2)
+                coh_dW_nominator(:, i) = ...
+                exp( self.betaForSoftmax*allCos(i) )*...
+                allCos(i)*...
+                ( resW(:, i)/( self.W(:,i)'*resW(:,i) ) - self.W(:, i)/( self.W(:,i)'*self.W(:,i) ) );
+            end
+            coh_dW_nominator = coh_dW_nominator / coh_dW_denominator;
+            self.W = self.W - self.lRate*(self.cohPenalty*coh_dW_nominator);
+        end
 
 		% WEIGHT DECAY
 		if self.wPenalty > 0 % L2 
@@ -494,7 +552,9 @@ methods
 		% INIT. WEIGHTS (A' LA BENGIO)
 		range = sqrt(6/(2*self.nVis));
 		self.W = single(2*range*(rand(self.nVis,self.nHid)-.5));
-		
+        if self.cohPenalty > 0
+            self.resW = zeros( size(self.W) );
+        end
 		self.dW = zeros(size(self.W),'single');
 		self.b = zeros(1,self.nVis,'single');
 		self.db = zeros(size(self.b),'single');
@@ -540,7 +600,7 @@ methods
 		end
 	end
 
-	function [self,targets] = initClassifer(self,targets);
+	function [self,targets] = initClassifer(self,targets)
 	% [self,targets] = initClassifer(targets);
 	%--------------------------------------------------------------------------
 	% Initialize classifier units based on form of <targets>. Can also be used
