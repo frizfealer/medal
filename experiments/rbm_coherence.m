@@ -30,12 +30,13 @@ r{1} = rbm(arch);
 r{1} = r{1}.train(trainData,single(trainLabels));
 
 cohVec = [1 10 100 1e3 1e4 1e5 1e6 1e7];
-for i = 1:length(cohVec)
-    arch.opts{end} = cohVec(i);
-    r{i+1} = rbm(arch);
+parfor i = 1:length(cohVec)
+    archi = arch;
+    archi.opts{end} = cohVec(i);
+    r{i+1} = rbm(archi);
     r{i+1} = r{i+1}.train(trainData,single(trainLabels));
 end
-
+save( 'rbm_coherence.mat', 'r' );
 
 
 end
